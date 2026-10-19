@@ -898,24 +898,20 @@ def render_evaluation_tab(conn, verified_query_library, llm, evaluator_llm):
         "then computes Path Accuracy, Query Accuracy, and Average Confidence against the ground truth."
     )
 
-# Load test_queries.csv directly from repository
-    try:
-        ground_truth_preview = pd.read_csv("test_queries.csv")
-        st.subheader("Benchmark Test Queries")
-        st.dataframe(
-            ground_truth_preview[["Test Case", "User Query", "Expected Route", "Expected Query ID", "Expected Answer"]],
-            use_container_width=True
-        )
-    except Exception:
-        pass
+    uploaded_csv = st.file_uploader(
+        "Upload test_queries.csv (optional — falls back to a bundled copy if present)",
+        type=["csv"],
+        key="eval_tab_uploader",
+    )
 
     run_clicked = st.button("Run 5 Benchmark Test Cases", type="primary", key="eval_tab_run")
 
     if run_clicked:
-        try:
-            ground_truth = pd.read_csv("test_queries.csv")
-        except Exception:
-            st.error("Could not find `test_queries.csv`. Please ensure it is uploaded in the root GitHub folder alongside `app.py`.")
+        ground_truth = load_test_queries(uploaded_csv)
+        if ground_truth is None:
+            st.error(
+                f"Could not find `test_queries.csv`. Upload it above, or place it at `{TEST_CSV_PATH}`."
+            )
             return
 
         # Restrict to the 5 benchmark cases TC-01 through TC-05, in that order, if a Test Case column exists.
@@ -1083,46 +1079,14 @@ def main():
             "and does not replace human judgment for complex credit-risk decisions."
         )
 
-    # --- BLOCK FOR EXAMPLE QUESTIONS ---
-    st.subheader("Example Questions")
-    example_queries = [
-      (
-          "How much of our book is in real estate, and how much of that is"
-          " non-performing?"
-      ),
-      "Show me how our overdue book is distributed across DPD buckets.",
-      (
-          "List every restructured loan, flag which are impaired, and show"
-          " the overall impaired percentage."
-      ),
-      (
-          "Show me the average interest rate by sector, sorted from highest"
-          " to lowest."
-      ),
-      (
-          "How has the Stage 3 book size and its expected credit loss moved"
-          " over the last four quarters?"
-      ),
-  ]
+        st.subheader("Verified Query Library")
+        for qid, entry in verified_query_library.items():
+            with st.expander(qid):
+                st.write(entry["description"])
+                st.code(entry["sql"].strip(), language="sql")
 
-selected_example = st.selectbox(
-  "Select a sample question:",
-  ["-- Choose an example --"] + example_queries,
-  key="example_selector",
-  )
-
-if selected_example != "-- Choose an example --":
-    st.session_state["user_input_query"] = selected_example
-    # ---------------------------------------------
-      
-    st.subheader("Verified Query Library")
-    for qid, entry in verified_query_library.items():
-        with st.expander(qid):
-            st.write(entry["description"])
-            st.code(entry["sql"].strip(), language="sql")
-
-    with st.expander("Database schema used by the LLM"):
-        st.code(DATABASE_SCHEMA, language="text")
+        with st.expander("Database schema used by the LLM"):
+            st.code(DATABASE_SCHEMA, language="text")
 
     # ---- Tabs ---------------------------------------------------------------------------
     tab1, tab2, tab3 = st.tabs(["💬 Ask a Question", "✅ Test Cases & Evaluation", "🧾 Audit Trail"])
