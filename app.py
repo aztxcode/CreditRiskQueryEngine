@@ -1112,8 +1112,8 @@ selected_example = st.selectbox(
   )
 
 if selected_example != "-- Choose an example --":
-st.session_state["user_input_query"] = selected_example
-# ---------------------------------------------
+    st.session_state["user_input_query"] = selected_example
+    # ---------------------------------------------
       
     st.subheader("Verified Query Library")
     for qid, entry in verified_query_library.items():
