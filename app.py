@@ -1083,7 +1083,7 @@ def main():
             "and does not replace human judgment for complex credit-risk decisions."
         )
 
-        # --- BLOCK FOR EXAMPLE QUESTIONS ---
+    # --- BLOCK FOR EXAMPLE QUESTIONS ---
       st.subheader("Example Questions")
       example_queries = [
           (
@@ -1104,16 +1104,16 @@ def main():
               " over the last four quarters?"
           ),
       ]
-
+    
       selected_example = st.selectbox(
           "Select a sample question:",
           ["-- Choose an example --"] + example_queries,
           key="example_selector",
       )
-
+    
       if selected_example != "-- Choose an example --":
         st.session_state["user_input_query"] = selected_example
-      # ---------------------------------------------
+    # ---------------------------------------------
           
         st.subheader("Verified Query Library")
         for qid, entry in verified_query_library.items():
