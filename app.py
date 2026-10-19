@@ -898,20 +898,24 @@ def render_evaluation_tab(conn, verified_query_library, llm, evaluator_llm):
         "then computes Path Accuracy, Query Accuracy, and Average Confidence against the ground truth."
     )
 
-    uploaded_csv = st.file_uploader(
-        "Upload test_queries.csv (optional — falls back to a bundled copy if present)",
-        type=["csv"],
-        key="eval_tab_uploader",
-    )
+# Load test_queries.csv directly from repository
+    try:
+        ground_truth_preview = pd.read_csv("test_queries.csv")
+        st.subheader("Benchmark Test Queries")
+        st.dataframe(
+            ground_truth_preview[["Test Case", "User Query", "Expected Route", "Expected Query ID", "Expected Answer"]],
+            use_container_width=True
+        )
+    except Exception:
+        pass
 
     run_clicked = st.button("Run 5 Benchmark Test Cases", type="primary", key="eval_tab_run")
 
     if run_clicked:
-        ground_truth = load_test_queries(uploaded_csv)
-        if ground_truth is None:
-            st.error(
-                f"Could not find `test_queries.csv`. Upload it above, or place it at `{TEST_CSV_PATH}`."
-            )
+        try:
+            ground_truth = pd.read_csv("test_queries.csv")
+        except Exception:
+            st.error("Could not find `test_queries.csv`. Please ensure it is uploaded in the root GitHub folder alongside `app.py`.")
             return
 
         # Restrict to the 5 benchmark cases TC-01 through TC-05, in that order, if a Test Case column exists.
