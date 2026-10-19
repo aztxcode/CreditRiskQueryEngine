@@ -11,7 +11,9 @@ This app preserves the original notebook logic:
 - Escalation to human analyst if retry also fails
 - Query execution against a read-only SQLite connection
 - Business-focused narrative response generation
-- Full audit trail (route, query id, SQL, confidence, warnings) shown with every answer
+- Full audit trail (route, query id, SQL, confidence, warnings) for every answer
+
+UI is organized into three tabs: Ask a Question, Test Cases & Evaluation, and Audit Trail.
 """
 
 import os
@@ -59,6 +61,11 @@ EVALUATOR_MODEL = st.secrets.get("EVALUATOR_MODEL", os.environ.get("EVALUATOR_MO
 # Override with the DB_PATH secret/env var if it lives elsewhere.
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credit_risk_portfolio.db")
 DB_PATH = st.secrets.get("DB_PATH", os.environ.get("DB_PATH", DEFAULT_DB_PATH))
+
+# test_queries.csv is expected to sit alongside app.py as well, but can also be uploaded
+# from the "Test Cases & Evaluation" tab if it lives elsewhere.
+DEFAULT_TEST_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_queries.csv")
+TEST_CSV_PATH = st.secrets.get("TEST_CSV_PATH", os.environ.get("TEST_CSV_PATH", DEFAULT_TEST_CSV_PATH))
 
 # --------------------------------------------------------------------------------------
 # Database schema context (provided to the LLM in every prompt) - unchanged from notebook
@@ -728,6 +735,7 @@ def run_pipeline(user_question, db_connection, query_library, schema_context, ll
     exec_result = execute_query(candidate_sql, db_connection)
     df = exec_result["dataframe"]
     log["row_count"] = len(df)
+    log["warnings"] = exec_result["warnings"]
     log_status(f"[4] Execute: {len(df)} rows returned" + (f" | Warnings: {exec_result['warnings']}" if exec_result["warnings"] else ""))
 
     # Step 7: Response generation
@@ -742,108 +750,50 @@ def run_pipeline(user_question, db_connection, query_library, schema_context, ll
 
 
 # --------------------------------------------------------------------------------------
-# Streamlit UI
+# Audit trail helpers
 # --------------------------------------------------------------------------------------
-def main():
-    st.title("🏦 Northbridge Bank — Credit Risk Query Engine")
-    st.caption(
-        "Ask routine commercial lending portfolio questions in plain English. "
-        "Answers are produced via pre-approved verified templates where possible, "
-        "or read-only generated SQL that is validated before execution — with a full audit trail every time."
-    )
+def make_audit_entry(result):
+    """
+    Builds a JSON-serializable audit log entry from a run_pipeline() result.
+    Captures routing decision, validation gate checks, retries, and execution details.
+    """
+    log = result["log"]
+    df = result.get("dataframe")
 
-    # ---- Preflight checks -------------------------------------------------------------
-    if not OPENAI_API_KEY:
-        st.error(
-            "No OpenAI API key found. Add `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL`) "
-            "to your Streamlit secrets or environment variables before using the app."
-        )
-        st.stop()
-
-    if not os.path.exists(DB_PATH):
-        st.error(
-            f"Could not find the credit risk database at `{DB_PATH}`. "
-            "Place `credit_risk_portfolio.db` alongside `app.py`, or set the `DB_PATH` secret/env var."
-        )
-        st.stop()
-
-    llm, evaluator_llm = get_llms()
-    conn = get_connection(DB_PATH)
-    verified_query_library = build_verified_query_library()
-
-    # ---- Sidebar: library, schema, and optional ground-truth test runner --------------
-    with st.sidebar:
-        st.header("About")
-        st.write(
-            "This PoC covers the commercial lending portfolio only, is strictly read-only, "
-            "and does not replace human judgment for complex credit-risk decisions."
-        )
-
-        st.subheader("Verified Query Library")
-        for qid, entry in verified_query_library.items():
-            with st.expander(qid):
-                st.write(entry["description"])
-                st.code(entry["sql"].strip(), language="sql")
-
-        with st.expander("Database schema used by the LLM"):
-            st.code(DATABASE_SCHEMA, language="text")
-
-        st.subheader("Run ground-truth test cases")
-        uploaded_csv = st.file_uploader("Upload test_queries.csv (optional)", type=["csv"])
-        run_eval = st.button("Run evaluation", disabled=uploaded_csv is None)
-
-    # ---- Main: ask a question -----------------------------------------------------------
-    st.subheader("Ask a question")
-    example_questions = [
-        "What is the real estate sector's total outstanding and NPA exposure?",
-        "Show me the DPD aging profile of the portfolio.",
-        "How many restructured loans are impaired?",
-        "What is the average interest rate by sector?",
-        "How has Stage 3 exposure changed across reporting quarters?",
-    ]
-    with st.expander("Example questions"):
-        for q in example_questions:
-            st.markdown(f"- {q}")
-
-    user_question = st.text_input(
-        "Enter your portfolio question",
-        placeholder="e.g., What is the sector-wise outstanding and NPA breakdown?",
-    )
-    show_trace = st.checkbox("Show pipeline trace (routing, validation, retries)", value=True)
-    ask_clicked = st.button("Ask", type="primary", use_container_width=False)
-
-    if ask_clicked:
-        if not user_question.strip():
-            st.warning("Please enter a question first.")
-        else:
-            trace_container = st.container()
-            trace_lines = []
-
-            def status_cb(msg):
-                trace_lines.append(msg)
-
-            with st.spinner("Running the query engine pipeline..."):
-                result = run_pipeline(
-                    user_question, conn, verified_query_library, DATABASE_SCHEMA, llm, evaluator_llm, status_cb=status_cb
-                )
-
-            if show_trace and trace_lines:
-                with trace_container.expander("Pipeline trace", expanded=False):
-                    for line in trace_lines:
-                        st.text(line)
-
-            render_result(result)
-
-    # ---- Evaluation against ground truth -----------------------------------------------
-    if run_eval and uploaded_csv is not None:
-        ground_truth = pd.read_csv(uploaded_csv)
-        run_evaluation(ground_truth, conn, verified_query_library, llm, evaluator_llm)
+    entry = {
+        "timestamp": pd.Timestamp.now().isoformat(),
+        "user_question": log.get("user_question"),
+        "routing_decision": {
+            "route": log.get("route"),
+            "query_id": log.get("query_id"),
+            "match_reason": log.get("match_reason"),
+        },
+        "candidate_sql": log.get("candidate_sql"),
+        "validation_gate": log.get("gate_result"),
+        "retry_used": log.get("retry_used"),
+        "escalated": log.get("escalated"),
+        "execution": {
+            "executed_sql": log.get("executed_sql"),
+            "row_count": log.get("row_count"),
+            "warnings": log.get("warnings", []),
+        },
+        "confidence": log.get("confidence"),
+        "narrative": log.get("narrative"),
+    }
+    return entry
 
 
+def append_to_audit_history(result):
+    if "audit_history" not in st.session_state:
+        st.session_state["audit_history"] = []
+    st.session_state["audit_history"].append(make_audit_entry(result))
+
+
+# --------------------------------------------------------------------------------------
+# Rendering helpers
+# --------------------------------------------------------------------------------------
 def render_result(result):
     """Render one pipeline result: status banner, narrative, SQL, data, confidence."""
-    st.markdown("---")
-
     if result.get("escalated"):
         st.error("🚨 Escalated to human analyst")
         st.write(result["narrative"])
@@ -877,58 +827,278 @@ def render_result(result):
         st.info("No data returned.")
 
 
-def run_evaluation(ground_truth, conn, verified_query_library, llm, evaluator_llm):
-    st.markdown("---")
-    st.subheader("Evaluation Against Ground Truth")
+def load_test_queries(uploaded_csv):
+    """Load test_queries.csv from an uploaded file, else fall back to the bundled path."""
+    if uploaded_csv is not None:
+        return pd.read_csv(uploaded_csv)
+    if os.path.exists(TEST_CSV_PATH):
+        return pd.read_csv(TEST_CSV_PATH)
+    return None
 
-    evaluation_rows = []
-    test_results = []
-    progress = st.progress(0, text="Running test cases...")
 
-    for i, (_, gt) in enumerate(ground_truth.iterrows()):
-        tr = run_pipeline(gt["User Query"], conn, verified_query_library, DATABASE_SCHEMA, llm, evaluator_llm)
-        test_results.append(tr)
-        progress.progress((i + 1) / len(ground_truth), text=f"Running test cases... ({i + 1}/{len(ground_truth)})")
+# --------------------------------------------------------------------------------------
+# Tab 1: Ask a Question
+# --------------------------------------------------------------------------------------
+def render_ask_tab(conn, verified_query_library, llm, evaluator_llm):
+    st.subheader("Ask a question")
 
-        evaluation_rows.append(
-            {
-                "Test Case": gt.get("Test Case"),
-                "Expected Route": gt.get("Expected Route"),
-                "Actual Route": tr["route"],
-                "Route Match": tr["route"] == gt.get("Expected Route"),
-                "Expected Query ID": gt.get("Expected Query ID"),
-                "Actual Query ID": tr["query_id"],
-                "Query ID Match": (
-                    pd.isna(gt.get("Expected Query ID")) and pd.isna(tr["query_id"])
-                )
-                or tr["query_id"] == gt.get("Expected Query ID"),
-                "Confidence": tr["confidence"],
-                "Rows Returned": tr["row_count"],
-            }
+    example_questions = [
+        "What is the real estate sector's total outstanding and NPA exposure?",
+        "Show me the DPD aging profile of the portfolio.",
+        "How many restructured loans are impaired?",
+        "What is the average interest rate by sector?",
+        "How has Stage 3 exposure changed across reporting quarters?",
+    ]
+    with st.expander("Example questions"):
+        for q in example_questions:
+            st.markdown(f"- {q}")
+
+    user_question = st.text_input(
+        "Enter your portfolio question",
+        placeholder="e.g., What is the sector-wise outstanding and NPA breakdown?",
+        key="ask_tab_question",
+    )
+    show_trace = st.checkbox("Show pipeline trace (routing, validation, retries)", value=True, key="ask_tab_trace")
+    ask_clicked = st.button("Ask", type="primary", key="ask_tab_button")
+
+    if ask_clicked:
+        if not user_question.strip():
+            st.warning("Please enter a question first.")
+            return
+
+        trace_lines = []
+
+        def status_cb(msg):
+            trace_lines.append(msg)
+
+        with st.spinner("Running the query engine pipeline..."):
+            result = run_pipeline(
+                user_question, conn, verified_query_library, DATABASE_SCHEMA, llm, evaluator_llm, status_cb=status_cb
+            )
+
+        # Every executed query appends its log to the session-state audit history.
+        append_to_audit_history(result)
+
+        if show_trace and trace_lines:
+            with st.expander("Pipeline trace", expanded=False):
+                for line in trace_lines:
+                    st.text(line)
+
+        st.markdown("---")
+        render_result(result)
+
+
+# --------------------------------------------------------------------------------------
+# Tab 2: Test Cases & Evaluation
+# --------------------------------------------------------------------------------------
+def render_evaluation_tab(conn, verified_query_library, llm, evaluator_llm):
+    st.subheader("Test Cases & Evaluation")
+    st.write(
+        "Runs the five benchmark test cases (TC-01 through TC-05) from `test_queries.csv` against the pipeline, "
+        "then computes Path Accuracy, Query Accuracy, and Average Confidence against the ground truth."
+    )
+
+    uploaded_csv = st.file_uploader(
+        "Upload test_queries.csv (optional — falls back to a bundled copy if present)",
+        type=["csv"],
+        key="eval_tab_uploader",
+    )
+
+    run_clicked = st.button("Run 5 Benchmark Test Cases", type="primary", key="eval_tab_run")
+
+    if run_clicked:
+        ground_truth = load_test_queries(uploaded_csv)
+        if ground_truth is None:
+            st.error(
+                f"Could not find `test_queries.csv`. Upload it above, or place it at `{TEST_CSV_PATH}`."
+            )
+            return
+
+        # Restrict to the 5 benchmark cases TC-01 through TC-05, in that order, if a Test Case column exists.
+        if "Test Case" in ground_truth.columns:
+            benchmark_ids = [f"TC-0{i}" for i in range(1, 6)]
+            subset = ground_truth[ground_truth["Test Case"].astype(str).isin(benchmark_ids)].copy()
+            if not subset.empty:
+                order = {tc: i for i, tc in enumerate(benchmark_ids)}
+                subset["_order"] = subset["Test Case"].astype(str).map(order)
+                ground_truth = subset.sort_values("_order").drop(columns="_order").reset_index(drop=True)
+            else:
+                ground_truth = ground_truth.head(5).reset_index(drop=True)
+        else:
+            ground_truth = ground_truth.head(5).reset_index(drop=True)
+
+        evaluation_rows = []
+        test_results = []
+        progress = st.progress(0, text="Running test cases...")
+
+        for i, (_, gt) in enumerate(ground_truth.iterrows()):
+            result = run_pipeline(gt["User Query"], conn, verified_query_library, DATABASE_SCHEMA, llm, evaluator_llm)
+            test_results.append(result)
+
+            # Every executed query appends its log to the session-state audit history.
+            append_to_audit_history(result)
+
+            progress.progress((i + 1) / len(ground_truth), text=f"Running test cases... ({i + 1}/{len(ground_truth)})")
+
+            tr = result["log"]
+            evaluation_rows.append(
+                {
+                    "Test Case": gt.get("Test Case", f"TC-0{i + 1}"),
+                    "User Query": gt.get("User Query"),
+                    "Expected Route": gt.get("Expected Route"),
+                    "Actual Route": tr["route"],
+                    "Route Match": tr["route"] == gt.get("Expected Route"),
+                    "Expected Query ID": gt.get("Expected Query ID"),
+                    "Actual Query ID": tr["query_id"],
+                    "Query ID Match": (
+                        pd.isna(gt.get("Expected Query ID")) and pd.isna(tr["query_id"])
+                    )
+                    or tr["query_id"] == gt.get("Expected Query ID"),
+                    "Confidence": tr["confidence"],
+                    "Rows Returned": tr["row_count"],
+                }
+            )
+
+        progress.empty()
+
+        evaluation_df = pd.DataFrame(evaluation_rows)
+        path_accuracy = evaluation_df["Route Match"].mean() * 100
+
+        verified_mask = evaluation_df["Expected Route"].astype(str).str.strip().str.lower() == "verified"
+        query_accuracy = (
+            evaluation_df.loc[verified_mask, "Query ID Match"].mean() * 100 if verified_mask.any() else float("nan")
         )
 
-    progress.empty()
+        numeric_confidence = pd.to_numeric(evaluation_df["Confidence"], errors="coerce")
+        average_confidence = numeric_confidence.mean()
 
-    evaluation_df = pd.DataFrame(evaluation_rows)
-    path_accuracy = evaluation_df["Route Match"].mean() * 100
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Path Accuracy", f"{path_accuracy:.1f}%")
+        c2.metric("Query Accuracy", f"{query_accuracy:.1f}%" if not pd.isna(query_accuracy) else "N/A")
+        c3.metric("Average Confidence", f"{average_confidence:.2f}" if not pd.isna(average_confidence) else "N/A")
 
-    verified_mask = evaluation_df["Expected Route"].astype(str).str.strip().str.lower() == "verified"
-    query_accuracy = evaluation_df.loc[verified_mask, "Query ID Match"].mean() * 100 if verified_mask.any() else float("nan")
+        st.subheader("Evaluation Results")
+        st.dataframe(evaluation_df, use_container_width=True)
 
-    numeric_confidence = pd.to_numeric(evaluation_df["Confidence"], errors="coerce")
-    average_confidence = numeric_confidence.mean()
+        st.session_state["last_evaluation_df"] = evaluation_df
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Selected Path Accuracy", f"{path_accuracy:.1f}%")
-    c2.metric("Selected Query Accuracy", f"{query_accuracy:.1f}%" if not pd.isna(query_accuracy) else "N/A")
-    c3.metric("Average Confidence", f"{average_confidence:.2f}" if not pd.isna(average_confidence) else "N/A")
+        with st.expander("Full results per test case"):
+            for i, result in enumerate(test_results):
+                st.markdown(f"**{evaluation_rows[i]['Test Case']}: {evaluation_rows[i]['User Query']}**")
+                render_result(result)
+                st.markdown("---")
+    elif "last_evaluation_df" in st.session_state:
+        st.info("Showing results from the most recent run.")
+        st.dataframe(st.session_state["last_evaluation_df"], use_container_width=True)
 
-    st.dataframe(evaluation_df, use_container_width=True)
 
-    with st.expander("Full results per test case"):
-        for i, tr in enumerate(test_results):
-            st.markdown(f"**Test Case {i + 1}: {ground_truth.iloc[i].get('User Query')}**")
-            render_result(tr)
+# --------------------------------------------------------------------------------------
+# Tab 3: Audit Trail
+# --------------------------------------------------------------------------------------
+def render_audit_tab():
+    st.subheader("Audit Trail")
+    st.write(
+        "Every question answered in this session — from the Ask tab or the Evaluation tab — is logged here, "
+        "including the routing decision, validation gate checks, retries, and execution details."
+    )
+
+    history = st.session_state.get("audit_history", [])
+
+    if not history:
+        st.info("No queries have been run yet in this session.")
+        return
+
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.write(f"**{len(history)}** logged quer{'y' if len(history) == 1 else 'ies'} this session.")
+    with col2:
+        if st.button("Clear audit history", key="clear_audit_history"):
+            st.session_state["audit_history"] = []
+            st.rerun()
+
+    download_payload = json.dumps(history, indent=2, default=str)
+    st.download_button(
+        "Download full audit trail (JSON)",
+        data=download_payload,
+        file_name="audit_trail.json",
+        mime="application/json",
+    )
+
+    for i, entry in enumerate(reversed(history)):
+        idx = len(history) - i
+        route = entry["routing_decision"].get("route")
+        query_id = entry["routing_decision"].get("query_id")
+        escalated = entry.get("escalated")
+        label_suffix = " — ESCALATED" if escalated else ""
+        label = f"#{idx} [{entry.get('timestamp', '')}] {entry.get('user_question', '')} — route={route}" + (
+            f" ({query_id})" if query_id else ""
+        ) + label_suffix
+
+        with st.expander(label):
+            st.json(entry)
+
+
+# --------------------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------------------
+def main():
+    st.title("🏦 Northbridge Bank — Credit Risk Query Engine")
+    st.caption(
+        "Ask routine commercial lending portfolio questions in plain English. "
+        "Answers are produced via pre-approved verified templates where possible, "
+        "or read-only generated SQL that is validated before execution — with a full audit trail every time."
+    )
+
+    if "audit_history" not in st.session_state:
+        st.session_state["audit_history"] = []
+
+    # ---- Preflight checks -------------------------------------------------------------
+    if not OPENAI_API_KEY:
+        st.error(
+            "No OpenAI API key found. Add `OPENAI_API_KEY` (and optionally `OPENAI_BASE_URL`) "
+            "to your Streamlit secrets or environment variables before using the app."
+        )
+        st.stop()
+
+    if not os.path.exists(DB_PATH):
+        st.error(
+            f"Could not find the credit risk database at `{DB_PATH}`. "
+            "Place `credit_risk_portfolio.db` alongside `app.py`, or set the `DB_PATH` secret/env var."
+        )
+        st.stop()
+
+    llm, evaluator_llm = get_llms()
+    conn = get_connection(DB_PATH)
+    verified_query_library = build_verified_query_library()
+
+    # ---- Sidebar: library and schema reference ----------------------------------------
+    with st.sidebar:
+        st.header("About")
+        st.write(
+            "This PoC covers the commercial lending portfolio only, is strictly read-only, "
+            "and does not replace human judgment for complex credit-risk decisions."
+        )
+
+        st.subheader("Verified Query Library")
+        for qid, entry in verified_query_library.items():
+            with st.expander(qid):
+                st.write(entry["description"])
+                st.code(entry["sql"].strip(), language="sql")
+
+        with st.expander("Database schema used by the LLM"):
+            st.code(DATABASE_SCHEMA, language="text")
+
+    # ---- Tabs ---------------------------------------------------------------------------
+    tab1, tab2, tab3 = st.tabs(["💬 Ask a Question", "✅ Test Cases & Evaluation", "🧾 Audit Trail"])
+
+    with tab1:
+        render_ask_tab(conn, verified_query_library, llm, evaluator_llm)
+
+    with tab2:
+        render_evaluation_tab(conn, verified_query_library, llm, evaluator_llm)
+
+    with tab3:
+        render_audit_tab()
 
 
 if __name__ == "__main__":
