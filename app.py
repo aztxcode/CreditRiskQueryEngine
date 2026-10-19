@@ -1084,7 +1084,7 @@ def main():
         )
 
     # --- BLOCK FOR EXAMPLE QUESTIONS ---
-      st.subheader("Example Questions")
+    st.subheader("Example Questions")
       example_queries = [
           (
               "How much of our book is in real estate, and how much of that is"
