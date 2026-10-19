@@ -1083,6 +1083,35 @@ def main():
             "and does not replace human judgment for complex credit-risk decisions."
         )
 
+# Sidebar Example Questions Component
+st.sidebar.title("Example Questions")
+example_queries = [
+    (
+        "How much of our book is in real estate, and how much of that is"
+        " non-performing?"
+    ),
+    "Show me how our overdue book is distributed across DPD buckets.",
+    (
+        "List every restructured loan, flag which are impaired, and show the"
+        " overall impaired percentage."
+    ),
+    (
+        "Show me the average interest rate by sector, sorted from highest to"
+        " lowest."
+    ),
+    (
+        "How has the Stage 3 book size and its expected credit loss moved over"
+        " the last four quarters?"
+    ),
+]
+
+selected_example = st.sidebar.selectbox(
+    "Choose a sample query to populate:", ["-- Select an example --"] + example_queries
+)
+
+if selected_example != "-- Select an example --":
+  st.session_state["query_input"] = selected_example
+
         st.subheader("Verified Query Library")
         for qid, entry in verified_query_library.items():
             with st.expander(qid):
