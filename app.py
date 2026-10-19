@@ -1105,10 +1105,10 @@ def main():
       ),
   ]
 
-  selected_example = st.selectbox(
-      "Select a sample question:",
-      ["-- Choose an example --"] + example_queries,
-      key="example_selector",
+      selected_example = st.selectbox(
+          "Select a sample question:",
+          ["-- Choose an example --"] + example_queries,
+          key="example_selector",
   )
 
   if selected_example != "-- Choose an example --":
