@@ -1111,18 +1111,18 @@ selected_example = st.selectbox(
   key="example_selector",
   )
 
-  if selected_example != "-- Choose an example --":
-    st.session_state["user_input_query"] = selected_example
-    # ---------------------------------------------
-          
-        st.subheader("Verified Query Library")
-        for qid, entry in verified_query_library.items():
-            with st.expander(qid):
-                st.write(entry["description"])
-                st.code(entry["sql"].strip(), language="sql")
+if selected_example != "-- Choose an example --":
+st.session_state["user_input_query"] = selected_example
+# ---------------------------------------------
+      
+    st.subheader("Verified Query Library")
+    for qid, entry in verified_query_library.items():
+        with st.expander(qid):
+            st.write(entry["description"])
+            st.code(entry["sql"].strip(), language="sql")
 
-        with st.expander("Database schema used by the LLM"):
-            st.code(DATABASE_SCHEMA, language="text")
+    with st.expander("Database schema used by the LLM"):
+        st.code(DATABASE_SCHEMA, language="text")
 
     # ---- Tabs ---------------------------------------------------------------------------
     tab1, tab2, tab3 = st.tabs(["💬 Ask a Question", "✅ Test Cases & Evaluation", "🧾 Audit Trail"])
