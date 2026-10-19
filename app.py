@@ -827,36 +827,17 @@ def render_result(result):
         st.info("No data returned.")
 
 
-def load_test_queries(uploaded_csv):
-    """Load test_queries.csv from an uploaded file, else fall back to the bundled path."""
-    if uploaded_csv is not None:
-        return pd.read_csv(uploaded_csv)
-    if os.path.exists(TEST_CSV_PATH):
-        return pd.read_csv(TEST_CSV_PATH)
-    return None
-
-
 # --------------------------------------------------------------------------------------
 # Tab 1: Ask a Question
 # --------------------------------------------------------------------------------------
 def render_ask_tab(conn, verified_query_library, llm, evaluator_llm):
     st.subheader("Ask a question")
-
-    example_questions = [
-        "What is the real estate sector's total outstanding and NPA exposure?",
-        "Show me the DPD aging profile of the portfolio.",
-        "How many restructured loans are impaired?",
-        "What is the average interest rate by sector?",
-        "How has Stage 3 exposure changed across reporting quarters?",
-    ]
-    with st.expander("Example questions"):
-        for q in example_questions:
-            st.markdown(f"- {q}")
+    st.caption("Pick an example from the sidebar to populate the box below, or type your own question.")
 
     user_question = st.text_input(
         "Enter your portfolio question",
         placeholder="e.g., What is the sector-wise outstanding and NPA breakdown?",
-        key="ask_tab_question",
+        key="query_input",
     )
     show_trace = st.checkbox("Show pipeline trace (routing, validation, retries)", value=True, key="ask_tab_trace")
     ask_clicked = st.button("Ask", type="primary", key="ask_tab_button")
@@ -898,13 +879,17 @@ def render_evaluation_tab(conn, verified_query_library, llm, evaluator_llm):
         "then computes Path Accuracy, Query Accuracy, and Average Confidence against the ground truth."
     )
 
-# Load test_queries.csv directly from repository
+    # Load test_queries.csv directly from the repository (bundled alongside app.py)
     try:
-        ground_truth_preview = pd.read_csv("test_queries.csv")
+        ground_truth_preview = pd.read_csv(TEST_CSV_PATH)
+        preview_cols = [
+            c for c in ["Test Case", "User Query", "Expected Route", "Expected Query ID", "Expected Answer"]
+            if c in ground_truth_preview.columns
+        ]
         st.subheader("Benchmark Test Queries")
         st.dataframe(
-            ground_truth_preview[["Test Case", "User Query", "Expected Route", "Expected Query ID", "Expected Answer"]],
-            use_container_width=True
+            ground_truth_preview[preview_cols] if preview_cols else ground_truth_preview,
+            use_container_width=True,
         )
     except Exception:
         pass
@@ -913,9 +898,12 @@ def render_evaluation_tab(conn, verified_query_library, llm, evaluator_llm):
 
     if run_clicked:
         try:
-            ground_truth = pd.read_csv("test_queries.csv")
+            ground_truth = pd.read_csv(TEST_CSV_PATH)
         except Exception:
-            st.error("Could not find `test_queries.csv`. Please ensure it is uploaded in the root GitHub folder alongside `app.py`.")
+            st.error(
+                "Could not find `test_queries.csv`. Please ensure it is uploaded in the root GitHub folder "
+                "alongside `app.py`."
+            )
             return
 
         # Restrict to the 5 benchmark cases TC-01 through TC-05, in that order, if a Test Case column exists.
@@ -1074,6 +1062,36 @@ def main():
     llm, evaluator_llm = get_llms()
     conn = get_connection(DB_PATH)
     verified_query_library = build_verified_query_library()
+
+    # ---- Sidebar: example questions -----------------------------------------------------
+    # Selecting an example populates the "query_input" text box on the Ask a Question tab.
+    st.sidebar.title("Example Questions")
+    example_queries = [
+        (
+            "How much of our book is in real estate, and how much of that is"
+            " non-performing?"
+        ),
+        "Show me how our overdue book is distributed across DPD buckets.",
+        (
+            "List every restructured loan, flag which are impaired, and show the"
+            " overall impaired percentage."
+        ),
+        (
+            "Show me the average interest rate by sector, sorted from highest to"
+            " lowest."
+        ),
+        (
+            "How has the Stage 3 book size and its expected credit loss moved over"
+            " the last four quarters?"
+        ),
+    ]
+
+    selected_example = st.sidebar.selectbox(
+        "Choose a sample query to populate:", ["-- Select an example --"] + example_queries
+    )
+
+    if selected_example != "-- Select an example --":
+        st.session_state["query_input"] = selected_example
 
     # ---- Sidebar: library and schema reference ----------------------------------------
     with st.sidebar:
